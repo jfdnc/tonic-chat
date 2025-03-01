@@ -1,0 +1,137 @@
+# Tonic Chat
+
+A real-time chat application using gRPC (Tonic) and Tokio with bidirectional streaming.
+
+## Prerequisites
+
+- [Rust](https://www.rust-lang.org/tools/install) (1.65 or newer)
+- [Protocol Buffers compiler](https://grpc.io/docs/protoc-installation/) (required for compiling protocol buffers)
+- [Docker](https://docs.docker.com/get-docker/) (optional, for containerized deployment)
+
+## Getting Started
+
+### Building the Server
+
+Clone the repository and build the project:
+
+```bash
+git clone https://github.com/yourusername/tonic-chat.git
+cd tonic-chat
+cargo build --release
+```
+
+### Running the Server
+
+Run the chat server:
+
+```bash
+cargo run --release
+```
+
+The server will start and listen on `[::1]:50051` (localhost on IPv6).
+
+## Project Structure
+
+```
+tonic-chat/
+├── Cargo.toml         # Project dependencies
+├── build.rs           # Protocol buffer compilation setup
+├── proto/
+│   └── chat.proto     # gRPC service and message definitions
+├── src/
+│   └── main.rs        # Server implementation
+└── Dockerfile         # Docker build configuration
+```
+
+## Implementation Details
+
+The application provides:
+
+- A gRPC server using Tonic for handling connections
+- Bidirectional streaming for real-time chat
+- Broadcasting of messages to all connected clients
+- Client connection tracking and management
+
+## Using Docker
+
+Build and run with Docker:
+
+```bash
+# Build the Docker image
+docker build -t tonic-chat .
+
+# Run the container
+docker run -p 50051:50051 tonic-chat
+```
+
+## Testing the Chat Service
+
+Since this repository only contains the server implementation, you'll need a gRPC client to connect to it. Here are some options:
+
+### Using grpcurl
+
+You can use [grpcurl](https://github.com/fullstorydev/grpcurl) to test the service:
+
+```bash
+# Install grpcurl (if you haven't already)
+# Example command for sending a message (though bidirectional streaming is hard to test this way)
+grpcurl -plaintext -d '{"username": "test_user", "message": "Hello world!"}' [::1]:50051 chat.Chat/ChatStream
+```
+
+### Implementing a Client
+
+For a complete chat experience, you'll need to implement a client. Here's a basic example in Rust:
+
+```rust
+use chat::{ChatMessage, chat_client::ChatClient};
+use futures_util::StreamExt;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
+use tonic::Request;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut client = ChatClient::connect("http://[::1]:50051").await?;
+    
+    // Create a channel for sending messages to server
+    let (tx, rx) = mpsc::channel(32);
+    let outbound = ReceiverStream::new(rx);
+    
+    // Establish bidirectional streaming connection
+    let response = client.chat_stream(Request::new(outbound)).await?;
+    let mut inbound = response.into_inner();
+    
+    // Send a test message
+    tx.send(ChatMessage {
+        username: "client_user".to_string(),
+        message: "Hello from Rust client!".to_string(),
+    }).await?;
+    
+    // Listen for incoming messages
+    while let Some(message) = inbound.next().await {
+        match message {
+            Ok(msg) => {
+                println!("{}: {}", msg.username, msg.message);
+            }
+            Err(e) => {
+                println!("Error receiving message: {:?}", e);
+                break;
+            }
+        }
+    }
+    
+    Ok(())
+}
+```
+
+## Future Improvements
+
+- Authentication and user management
+- Persistent chat history
+- Private messaging
+- Multiple chat rooms
+- Web client integration
+
+## License
+
+[MIT License](LICENSE)

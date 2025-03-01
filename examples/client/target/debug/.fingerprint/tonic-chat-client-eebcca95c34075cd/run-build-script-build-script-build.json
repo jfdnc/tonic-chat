@@ -1,0 +1,1 @@
+{"rustc":11191592689627823450,"features":"","declared_features":"","target":0,"profile":0,"path":0,"deps":[[9449028283907675152,"build_script_build",false,11981607175513628456]],"local":[{"RerunIfChanged":{"output":"debug/build/tonic-chat-client-eebcca95c34075cd/output","paths":["../../proto/chat.proto","../../proto"]}}],"rustflags":[],"metadata":0,"config":0,"compile_kind":0}
