@@ -1,15 +1,10 @@
-use std::collections::HashMap;
-use std::pin::Pin;
-use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
+use std::{collections::HashMap, pin::Pin, sync::Arc};
+use tokio::sync::{mpsc, Mutex};
+use tokio_stream::{wrappers::ReceiverStream, StreamExt};
+use tonic::{transport::Server, Request, Response, Status};
+use uuid::Uuid;
 
-use futures_util::StreamExt;
-use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
-use tonic::{Request, Response, Status};
-use tonic::transport::Server;
-
-// Import the generated proto code
+// Generated protobuf code
 pub mod chat {
     tonic::include_proto!("chat");
 }
@@ -19,29 +14,33 @@ use chat::{
     ChatMessage, ListUsersRequest, ListUsersResponse, User,
 };
 
-// Type aliases for better readability
-type ResponseStream = Pin<Box<dyn futures_util::Stream<Item = Result<ChatMessage, Status>> + Send>>;
-type Broadcaster = mpsc::Sender<Result<ChatMessage, Status>>;
-type ClientMap = Arc<Mutex<HashMap<String, (String, Broadcaster)>>>; // Now includes username
+/// Stream of chat messages sent from the server to clients
+type ResponseStream =
+    Pin<Box<dyn tokio_stream::Stream<Item = Result<ChatMessage, Status>> + Send>>;
 
-#[derive(Debug)]
+/// Channel for sending messages to a specific client
+type ClientSender = mpsc::Sender<Result<ChatMessage, Status>>;
+
+/// Shared state containing all connected clients
+type ClientRegistry = Arc<Mutex<HashMap<String, (String, ClientSender)>>>;
+
 struct ChatService {
-    clients: ClientMap,
+    clients: ClientRegistry,
 }
 
 impl ChatService {
     fn new() -> Self {
-        ChatService {
+        Self {
             clients: Arc::new(Mutex::new(HashMap::new())),
         }
     }
-    
-    // Helper method to broadcast a message to all connected clients
-    fn broadcast(clients: &ClientMap, message: ChatMessage) {
-        let clients = clients.lock().unwrap();
+
+    /// Broadcasts a message to all connected clients
+    async fn broadcast(clients: &ClientRegistry, message: ChatMessage) {
+        let clients = clients.lock().await;
         
-        for (client_id, (username, tx)) in clients.iter() {
-            match tx.try_send(Ok(message.clone())) {
+        for (client_id, (username, sender)) in clients.iter() {
+            match sender.try_send(Ok(message.clone())) {
                 Ok(_) => println!("Message sent to {} ({})", username, client_id),
                 Err(e) => println!("Failed to send message to {} ({}): {:?}", username, client_id, e),
             }
@@ -57,58 +56,45 @@ impl Chat for ChatService {
         &self,
         request: Request<tonic::Streaming<ChatMessage>>,
     ) -> Result<Response<Self::ChatStreamStream>, Status> {
-        println!("New client connected: {:?}", request.remote_addr());
+        let remote_addr = request.remote_addr()
+            .map_or("unknown".to_string(), |addr| addr.to_string());
+        println!("New client connected from {}", remote_addr);
+
+        let client_id = Uuid::new_v4().to_string();
+        let initial_username = format!("user_{}", &client_id[..6]);
+        let mut inbound = request.into_inner();
         
-        // Generate a unique client ID
-        let client_id = format!("{:?}", SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos());
-            
-        let mut request_stream = request.into_inner();
-        
-        // Create a channel for this client
+        // Create channel for sending messages to this client
         let (tx, rx) = mpsc::channel(100);
-        let rx_stream = ReceiverStream::new(rx);
-        
-        // We'll initialize with an "anonymous" username
-        let initial_username = format!("user_{}", client_id.chars().take(6).collect::<String>());
-        
-        // Store the sender and initial username in our clients map
+        let clients = Arc::clone(&self.clients);
+
+        // Register the new client
         {
-            let mut clients = self.clients.lock().unwrap();
-            clients.insert(client_id.clone(), (initial_username.clone(), tx.clone()));
+            let mut client_map = self.clients.lock().await;
+            client_map.insert(client_id.clone(), (initial_username.clone(), tx.clone()));
         }
-        
-        // Clone the clients map for the task
-        let clients_for_task = self.clients.clone();
-        
-        // Spawn a task to process incoming messages from this client
+
+        // Handle incoming messages from this client
         tokio::spawn(async move {
-            // Initialize last_username with the temporary username
-            let mut last_username = initial_username;
+            let mut current_username = initial_username;
             
-            while let Some(result) = request_stream.next().await {
+            // Process incoming messages until client disconnects or error occurs
+            while let Some(result) = inbound.next().await {
                 match result {
                     Ok(msg) => {
-                        println!("Received message from {} ({}): {:?}", msg.username, client_id, msg.message);
-                        
-                        // Always update username if it's different from what we have
-                        if last_username != msg.username {
-                            println!("Username changed from {} to {}", last_username, msg.username);
-                            
-                            // Update the username in the clients map
-                            let mut clients = clients_for_task.lock().unwrap();
-                            if let Some((username, _)) = clients.get_mut(&client_id) {
+                        println!("Received from {} ({}): {:?}", msg.username, client_id, msg.message);
+
+                        // Update username if changed
+                        if current_username != msg.username {
+                            println!("Username changed: {} → {}", current_username, msg.username);
+                            if let Some((username, _)) = clients.lock().await.get_mut(&client_id) {
                                 *username = msg.username.clone();
+                                current_username = msg.username.clone();
                             }
-                            
-                            // Update the last known username
-                            last_username = msg.username.clone();
                         }
-                        
-                        // Broadcast the message to all clients
-                        ChatService::broadcast(&clients_for_task, msg);
+
+                        // Relay message to all clients
+                        ChatService::broadcast(&clients, msg).await;
                     }
                     Err(e) => {
                         println!("Error receiving message: {:?}", e);
@@ -117,39 +103,33 @@ impl Chat for ChatService {
                 }
             }
             
-            // Remove the client when they disconnect
-            let mut clients = clients_for_task.lock().unwrap();
-            if let Some((username, _)) = clients.remove(&client_id) {
+            // Clean up when client disconnects
+            let mut client_map = clients.lock().await;
+            if let Some((username, _)) = client_map.remove(&client_id) {
                 println!("Client disconnected: {} ({})", username, client_id);
             } else {
-                println!("Client disconnected: {}", client_id);
+                println!("Unknown client disconnected: {}", client_id);
             }
         });
-        
-        // Return the receiver as a stream to the client
-        Ok(Response::new(Box::pin(rx_stream) as ResponseStream))
+
+        // Return stream of messages back to the client
+        Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
     }
 
     async fn list_users(
         &self,
         _request: Request<ListUsersRequest>,
     ) -> Result<Response<ListUsersResponse>, Status> {
-        // Get a lock on the clients map
-        let clients = self.clients.lock().unwrap();
+        let client_map = self.clients.lock().await;
         
-        // Create a list of User proto messages from connected clients using their actual usernames
-        let users = clients
-            .iter()
-            .map(|(_, (username, _))| User {
+        let users = client_map
+            .values()
+            .map(|(username, _)| User {
                 username: username.clone(),
             })
-            .collect::<Vec<_>>();
-        
-        // Create the response
-        let response = ListUsersResponse { users };
-        
-        // Return the response
-        Ok(Response::new(response))
+            .collect();
+            
+        Ok(Response::new(ListUsersResponse { users }))
     }
 }
 
@@ -157,13 +137,13 @@ impl Chat for ChatService {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = "[::1]:50051".parse()?;
     let chat_service = ChatService::new();
-    
-    println!("Chat server starting on {}", addr);
-    
+
+    println!("Chat server listening on {}", addr);
+
     Server::builder()
         .add_service(ChatServer::new(chat_service))
         .serve(addr)
         .await?;
-    
+
     Ok(())
 }
