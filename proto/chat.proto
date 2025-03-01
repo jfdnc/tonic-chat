@@ -1,12 +1,32 @@
 syntax = "proto3";
 package chat;
 
+// The chat service definition
 service Chat {
-  // ChatStream is a bidirectional streaming RPC for exchanging chat messages
-  rpc ChatStream(stream ChatMessage) returns (stream ChatMessage);
+  // Bidirectional streaming RPC for chat messages
+  rpc ChatStream (stream ChatMessage) returns (stream ChatMessage) {}
+  
+  // RPC to list all connected users
+  rpc ListUsers (ListUsersRequest) returns (ListUsersResponse) {}
 }
 
+// Message sent between clients
 message ChatMessage {
   string username = 1;
   string message = 2;
+}
+
+// Request to list users (empty message)
+message ListUsersRequest {
+}
+
+// Response containing a list of users
+message ListUsersResponse {
+  repeated User users = 1;
+}
+
+// User information
+message User {
+  string username = 1;
+  // Additional user info could be added here in the future
 }

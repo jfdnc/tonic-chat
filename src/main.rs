@@ -14,12 +14,15 @@ pub mod chat {
     tonic::include_proto!("chat");
 }
 
-use chat::{ChatMessage, chat_server::{Chat, ChatServer}};
+use chat::{
+    chat_server::{Chat, ChatServer},
+    ChatMessage, ListUsersRequest, ListUsersResponse, User,
+};
 
 // Type aliases for better readability
 type ResponseStream = Pin<Box<dyn futures_util::Stream<Item = Result<ChatMessage, Status>> + Send>>;
 type Broadcaster = mpsc::Sender<Result<ChatMessage, Status>>;
-type ClientMap = Arc<Mutex<HashMap<String, Broadcaster>>>;
+type ClientMap = Arc<Mutex<HashMap<String, (String, Broadcaster)>>>; // Now includes username
 
 #[derive(Debug)]
 struct ChatService {
@@ -34,14 +37,13 @@ impl ChatService {
     }
     
     // Helper method to broadcast a message to all connected clients
-    // Now a static method that takes the client map as an argument
     fn broadcast(clients: &ClientMap, message: ChatMessage) {
         let clients = clients.lock().unwrap();
         
-        for (client_id, tx) in clients.iter() {
+        for (client_id, (username, tx)) in clients.iter() {
             match tx.try_send(Ok(message.clone())) {
-                Ok(_) => println!("Message sent to client {}", client_id),
-                Err(e) => println!("Failed to send message to client {}: {:?}", client_id, e),
+                Ok(_) => println!("Message sent to {} ({})", username, client_id),
+                Err(e) => println!("Failed to send message to {} ({}): {:?}", username, client_id, e),
             }
         }
     }
@@ -69,10 +71,13 @@ impl Chat for ChatService {
         let (tx, rx) = mpsc::channel(100);
         let rx_stream = ReceiverStream::new(rx);
         
-        // Store the sender in our clients map
+        // We'll initialize with an "anonymous" username
+        let initial_username = format!("user_{}", client_id.chars().take(6).collect::<String>());
+        
+        // Store the sender and initial username in our clients map
         {
             let mut clients = self.clients.lock().unwrap();
-            clients.insert(client_id.clone(), tx.clone());
+            clients.insert(client_id.clone(), (initial_username.clone(), tx.clone()));
         }
         
         // Clone the clients map for the task
@@ -80,10 +85,27 @@ impl Chat for ChatService {
         
         // Spawn a task to process incoming messages from this client
         tokio::spawn(async move {
+            // Initialize last_username with the temporary username
+            let mut last_username = initial_username;
+            
             while let Some(result) = request_stream.next().await {
                 match result {
                     Ok(msg) => {
-                        println!("Received message from {}: {:?}", client_id, msg);
+                        println!("Received message from {} ({}): {:?}", msg.username, client_id, msg.message);
+                        
+                        // Always update username if it's different from what we have
+                        if last_username != msg.username {
+                            println!("Username changed from {} to {}", last_username, msg.username);
+                            
+                            // Update the username in the clients map
+                            let mut clients = clients_for_task.lock().unwrap();
+                            if let Some((username, _)) = clients.get_mut(&client_id) {
+                                *username = msg.username.clone();
+                            }
+                            
+                            // Update the last known username
+                            last_username = msg.username.clone();
+                        }
                         
                         // Broadcast the message to all clients
                         ChatService::broadcast(&clients_for_task, msg);
@@ -97,12 +119,37 @@ impl Chat for ChatService {
             
             // Remove the client when they disconnect
             let mut clients = clients_for_task.lock().unwrap();
-            clients.remove(&client_id);
-            println!("Client disconnected: {}", client_id);
+            if let Some((username, _)) = clients.remove(&client_id) {
+                println!("Client disconnected: {} ({})", username, client_id);
+            } else {
+                println!("Client disconnected: {}", client_id);
+            }
         });
         
         // Return the receiver as a stream to the client
         Ok(Response::new(Box::pin(rx_stream) as ResponseStream))
+    }
+
+    async fn list_users(
+        &self,
+        _request: Request<ListUsersRequest>,
+    ) -> Result<Response<ListUsersResponse>, Status> {
+        // Get a lock on the clients map
+        let clients = self.clients.lock().unwrap();
+        
+        // Create a list of User proto messages from connected clients using their actual usernames
+        let users = clients
+            .iter()
+            .map(|(_, (username, _))| User {
+                username: username.clone(),
+            })
+            .collect::<Vec<_>>();
+        
+        // Create the response
+        let response = ListUsersResponse { users };
+        
+        // Return the response
+        Ok(Response::new(response))
     }
 }
 
