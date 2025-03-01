@@ -40,6 +40,8 @@ tonic-chat/
 │   └── chat.proto     # gRPC service and message definitions
 ├── src/
 │   └── main.rs        # Server implementation
+├── examples/
+│   └── client/        # Example client implementation
 └── Dockerfile         # Docker build configuration
 ```
 
@@ -66,11 +68,46 @@ docker run -p 50051:50051 tonic-chat
 
 ## Testing the Chat Service
 
-Since this repository only contains the server implementation, you'll need a gRPC client to connect to it. Here are some options:
+### Using the Example Client
+
+This repository includes a fully functional chat client in the `examples/client` directory. This is the easiest way to test the chat service:
+
+1. First, start the server in one terminal:
+   ```bash
+   # In the project root directory
+   cargo run
+   ```
+
+2. Then, in a second terminal, start a client:
+   ```bash
+   # From the project root
+   cd examples/client
+   cargo run -- --username Alice
+   ```
+
+3. Open a third terminal for another client:
+   ```bash
+   cd examples/client
+   cargo run -- --username Bob
+   ```
+
+4. Type messages in either client terminal and see them appear in both clients.
+   
+5. Type `quit` to gracefully exit the client.
+
+#### Client Features
+
+- **Interactive prompt** with colored output showing your username
+- **Real-time message delivery** with bidirectional streaming
+- **Command-line options**:
+  - `--username` or `-u` - Set your chat username (default: "anonymous")
+  - `--server` or `-s` - Set the server address (default: "http://[::1]:50051")
+- **Visual differentiation** between your messages and those from others
+- **Clean disconnection handling**
 
 ### Using grpcurl
 
-You can use [grpcurl](https://github.com/fullstorydev/grpcurl) to test the service:
+You can also use [grpcurl](https://github.com/fullstorydev/grpcurl) to test the service:
 
 ```bash
 # Install grpcurl (if you haven't already)
@@ -78,9 +115,9 @@ You can use [grpcurl](https://github.com/fullstorydev/grpcurl) to test the servi
 grpcurl -plaintext -d '{"username": "test_user", "message": "Hello world!"}' [::1]:50051 chat.Chat/ChatStream
 ```
 
-### Implementing a Client
+### Using Custom Clients
 
-For a complete chat experience, you'll need to implement a client. Here's a basic example in Rust:
+You can implement your own client using any gRPC-compatible programming language. Here's a basic Rust client example:
 
 ```rust
 use chat::{ChatMessage, chat_client::ChatClient};
