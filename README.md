@@ -1,6 +1,6 @@
 # Tonic Chat
 
-A real-time chat application using gRPC (Tonic) and Tokio with bidirectional streaming.
+A simple chat application built with Rust, gRPC, and Tonic.
 
 ## Prerequisites
 
@@ -32,18 +32,9 @@ The server will start and listen on `[::1]:50051` (localhost on IPv6).
 
 ## Project Structure
 
-```
-tonic-chat/
-├── Cargo.toml         # Project dependencies
-├── build.rs           # Protocol buffer compilation setup
-├── proto/
-│   └── chat.proto     # gRPC service and message definitions
-├── src/
-│   └── main.rs        # Server implementation
-├── examples/
-│   └── client/        # Example client implementation
-└── Dockerfile         # Docker build configuration
-```
+- `proto/` - Contains the Protocol Buffers definitions
+- `server/` - The chat server implementation
+- `client/` - The chat client implementation
 
 ## Implementation Details
 
@@ -160,6 +151,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
+
+## Client Commands
+
+- `/quit` - Exit the chat application
+- `/help` - Show available commands
+- `/nick <new_username>` - Change your username
+- `/clear` - Clear the screen
+- `/users` - List connected users
 
 ## Future Improvements
 
